@@ -1,106 +1,223 @@
 "use client";
 
-import Image from "next/image";
-import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { NextPage } from "next";
+import { Address as AddressType, formatEther, parseEther } from "viem";
+import { createTestClient, http } from "viem";
+import { hardhat } from "viem/chains";
 import { useAccount } from "wagmi";
-import { BugAntIcon, MagnifyingGlassIcon } from "@heroicons/react/24/outline";
+import { Amount, Roll, RollEvents, Winner, WinnerEvents } from "~~/app/dice/_components";
 import { Address } from "~~/components/scaffold-eth";
+import {
+  useScaffoldContract,
+  useScaffoldEventHistory,
+  useScaffoldReadContract,
+  useScaffoldWriteContract,
+} from "~~/hooks/scaffold-eth";
+import { useWatchBalance } from "~~/hooks/scaffold-eth/useWatchBalance";
 
-const Home: NextPage = () => {
-  const { address: connectedAddress } = useAccount();
+const ROLL_ETH_VALUE = "0.002";
+const MAX_TABLE_ROWS = 10;
+
+const DiceGame: NextPage = () => {
+  const [rolls, setRolls] = useState<Roll[]>([]);
+  const [winners, setWinners] = useState<Winner[]>([]);
+
+  const { chain } = useAccount();
+
+  const testClient = useMemo(
+    () =>
+      chain?.id === hardhat.id
+        ? createTestClient({
+            chain: hardhat,
+            mode: "hardhat",
+            transport: http(),
+          })
+        : undefined,
+    [chain],
+  );
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const [rolled, setRolled] = useState(false);
+  const [isRolling, setIsRolling] = useState(false);
+
+  const { data: riggedRollContract } = useScaffoldContract({
+    contractName: "RiggedRoll",
+  });
+  const { data: riggedRollBalance } = useWatchBalance({
+    address: riggedRollContract?.address,
+  });
+  const { data: prize } = useScaffoldReadContract({
+    contractName: "DiceGame",
+    functionName: "prize",
+  });
+
+  const { data: rollsHistoryData, isLoading: rollsHistoryLoading } = useScaffoldEventHistory({
+    contractName: "DiceGame",
+    eventName: "Roll",
+    fromBlock: 0n,
+    watch: true,
+  });
+
+  useEffect(() => {
+    if (!testClient) return;
+
+    const interval = setInterval(async () => {
+      try {
+        await testClient.mine({ blocks: 1 });
+      } catch (error) {
+        console.error("Error mining block:", error);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [testClient]);
+
+  useEffect(() => {
+    if (
+      !rollsHistoryLoading &&
+      Boolean(rollsHistoryData?.length) &&
+      (rollsHistoryData?.length as number) > rolls.length
+    ) {
+      setIsRolling(false);
+
+      setRolls(
+        rollsHistoryData?.map(({ args }) => ({
+          address: args.player as AddressType,
+          amount: Number(args.amount),
+          roll: (args.roll as bigint).toString(16).toUpperCase(),
+        })) || [],
+      );
+    }
+  }, [rolls, rollsHistoryData, rollsHistoryLoading]);
+
+  const { data: winnerHistoryData, isLoading: winnerHistoryLoading } = useScaffoldEventHistory({
+    contractName: "DiceGame",
+    eventName: "Winner",
+    fromBlock: 0n,
+    watch: true,
+  });
+
+  useEffect(() => {
+    if (
+      !winnerHistoryLoading &&
+      Boolean(winnerHistoryData?.length) &&
+      (winnerHistoryData?.length as number) > winners.length
+    ) {
+      setIsRolling(false);
+
+      setWinners(
+        winnerHistoryData?.map(({ args }) => ({
+          address: args.winner as AddressType,
+          amount: args.amount as bigint,
+        })) || [],
+      );
+    }
+  }, [winnerHistoryData, winnerHistoryLoading, winners.length]);
+
+  const { writeContractAsync: writeDiceGameAsync, isError: rollTheDiceError } = useScaffoldWriteContract("DiceGame");
+
+  const { writeContractAsync: writeRiggedRollAsync, isError: riggedRollError } = useScaffoldWriteContract("RiggedRoll");
+
+  useEffect(() => {
+    if (rollTheDiceError || riggedRollError) {
+      setIsRolling(false);
+      setRolled(false);
+    }
+  }, [riggedRollError, rollTheDiceError]);
+
+  useEffect(() => {
+    if (videoRef.current && !isRolling) {
+      // show last frame
+      videoRef.current.currentTime = 9999;
+    }
+  }, [isRolling]);
 
   return (
-    <>
-      <div className="flex items-center flex-col flex-grow pt-10">
-        <div className="px-5">
-          <h1 className="text-center">
-            <span className="block text-2xl mb-2">Welcome to</span>
-            <span className="block text-4xl font-bold">Scaffold-ETH 2</span>
-            <span className="block text-xl font-bold">(SpeedRunEthereum Challenge #3 extension)</span>
-          </h1>
-          <div className="flex justify-center items-center space-x-2 flex-col sm:flex-row">
-            <p className="my-2 font-medium">Connected Address:</p>
-            <Address address={connectedAddress} />
+    <div className="py-10 px-10">
+      <div className="grid grid-cols-3 max-lg:grid-cols-1">
+        <div className="max-lg:row-start-2">
+          <RollEvents rolls={rolls.slice(0, MAX_TABLE_ROWS)} />
+        </div>
+
+        <div className="flex flex-col items-center pt-4 max-lg:row-start-1">
+          <div className="flex w-full justify-center">
+            <span className="text-xl">Roll a 0, 1, 2, 3, 4 or 5 to win the prize!</span>
           </div>
 
-          <div className="flex items-center flex-col flex-grow pt-10">
-            <div className="px-5">
-              <h1 className="text-center mb-6">
-                <span className="block text-2xl mb-2">SpeedRunEthereum</span>
-                <span className="block text-4xl font-bold">Challenge #3: 🎲 Dice Game</span>
-              </h1>
-              <div className="flex flex-col items-center justify-center">
-                <Image
-                  src="/hero.png"
-                  width="727"
-                  height="231"
-                  alt="challenge banner"
-                  className="rounded-xl border-4 border-primary"
-                />
-                <div className="max-w-3xl">
-                  <p className="text-lg mt-10">
-                    🎰 Randomness is tricky on a public deterministic blockchain. The block hash is an easy to use, but
-                    very weak form of randomness. This challenge will give you an example of a contract using block hash
-                    to create random numbers. This randomness is exploitable. Other, stronger forms of randomness
-                    include commit/reveal schemes, oracles, or VRF from Chainlink. the Ethereum protocol!
-                  </p>
-                  <p className="text-lg mt-2">👍 One day soon, randomness will be built into the Ethereum protocol!</p>
-                  <p className="text-lg mt-2">
-                    🧤 Every time a player rolls the dice, they are required to send .002 Eth. 40 percent of this value
-                    is added to the current prize amount while the other 60 percent stays in the contract to fund future
-                    prizes. Once a prize is won, the new prize amount is set to 10% of the total balance of the DiceGame
-                    contract.
-                  </p>
-                  <p className="text-lg mt-2">
-                    🧨 Your job is to attack the Dice Game contract! You will create a new contract that will predict
-                    the randomness ahead of time and only roll the dice when you′re guaranteed to be a winner!
-                  </p>
-                  <p className="text-lg mt-2">
-                    💬 Meet other builders working on this challenge and get help in the{" "}
-                    <a href="https://t.me/+3StA0aBSArFjNjUx" target="_blank" rel="noreferrer" className="underline">
-                      Telegram Group
-                    </a>
-                  </p>
-                  <p className="text-center text-lg">
-                    <a href="https://speedrunethereum.com/" target="_blank" rel="noreferrer" className="underline">
-                      SpeedRunEthereum.com
-                    </a>
-                    !
-                  </p>
-                </div>
-              </div>
+          <div className="flex items-center mt-1">
+            <span className="text-lg mr-2">Prize:</span>
+            <Amount amount={prize ? Number(formatEther(prize)) : 0} showUsdPrice className="text-lg" />
+          </div>
+
+          <button
+            onClick={async () => {
+              if (!rolled) {
+                setRolled(true);
+              }
+              setIsRolling(true);
+              try {
+                await writeDiceGameAsync({
+                  functionName: "rollTheDice",
+                  value: parseEther(ROLL_ETH_VALUE),
+                });
+              } catch (err) {
+                console.error("Error calling rollTheDice function", err);
+              }
+            }}
+            disabled={isRolling}
+            className="mt-2 btn btn-secondary btn-xl normal-case font-xl text-lg"
+          >
+            Roll the dice!
+          </button>
+          <div className="mt-4 pt-2 flex flex-col items-center w-full justify-center border-t-4 border-primary">
+            <span className="text-2xl">Rigged Roll</span>
+            <div className="flex mt-2 items-center">
+              <span className="mr-2 text-lg">Address:</span>
+              <Address size="lg" address={riggedRollContract?.address} />
             </div>
+            <div className="flex mt-1 items-center">
+              <span className="text-lg mr-2">Balance:</span>
+              <Amount amount={Number(riggedRollBalance?.formatted || 0)} showUsdPrice className="text-lg" />
+            </div>
+          </div>
+          <button
+            onClick={async () => {
+              if (!rolled) {
+                setRolled(true);
+              }
+              setIsRolling(true);
+              try {
+                await writeRiggedRollAsync({ functionName: "riggedRoll" });
+              } catch (err) {
+                console.error("Error calling riggedRoll function", err);
+              }
+            }}
+            disabled={isRolling}
+            className="mt-2 btn btn-secondary btn-xl normal-case font-xl text-lg"
+          >
+            Rigged Roll!
+          </button>
+          <div className="flex mt-8">
+            {rolled ? (
+              isRolling ? (
+                <video key="rolling" width={300} height={300} loop src="/rolls/Spin.webm" autoPlay />
+              ) : (
+                <video key="rolled" width={300} height={300} src={`/rolls/${rolls[0]?.roll || "0"}.webm`} autoPlay />
+              )
+            ) : (
+              <video ref={videoRef} key="last" width={300} height={300} src={`/rolls/${rolls[0]?.roll || "0"}.webm`} />
+            )}
           </div>
         </div>
 
-        <div className="flex-grow bg-base-300 w-full mt-16 px-8 py-12">
-          <div className="flex justify-center items-center gap-12 flex-col sm:flex-row">
-            <div className="flex flex-col bg-base-100 px-10 py-10 text-center items-center max-w-xs rounded-3xl">
-              <BugAntIcon className="h-8 w-8 fill-secondary" />
-              <p>
-                Tinker with your smart contract using the{" "}
-                <Link href="/debug" passHref className="link">
-                  Debug Contracts
-                </Link>{" "}
-                tab.
-              </p>
-            </div>
-            <div className="flex flex-col bg-base-100 px-10 py-10 text-center items-center max-w-xs rounded-3xl">
-              <MagnifyingGlassIcon className="h-8 w-8 fill-secondary" />
-              <p>
-                Explore your local transactions with the{" "}
-                <Link href="/blockexplorer" passHref className="link">
-                  Block Explorer
-                </Link>{" "}
-                tab.
-              </p>
-            </div>
-          </div>
+        <div className="max-lg:row-start-3">
+          <WinnerEvents winners={winners.slice(0, MAX_TABLE_ROWS)} />
         </div>
       </div>
-    </>
+    </div>
   );
 };
 
-export default Home;
+export default DiceGame;
